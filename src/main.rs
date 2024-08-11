@@ -1,10 +1,9 @@
 use clap::{AppSettings, Parser, Subcommand};
+use k256::{elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint}, SecretKey};
 use path_absolutize::*;
-use std::io;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
-use micro_uecc_safe;
 mod decode;
 /// tencent-mars-xlog-util CLI
 #[derive(Parser)]
@@ -63,12 +62,15 @@ impl Cli {
     pub fn execute(&self) {
         match &self.command {
             Commands::GenKey => {
-                if let Some(pair) = micro_uecc_safe::gen_secp2561k1_key_pair() {
-                    println!("private_key: {}", pair.private_key);
-                    println!("public_key: {}", pair.public_key);
-                } else {
-                    println!("生成失败")
-                }
+                let private_key = SecretKey::random(&mut OsRng);
+                println!(
+                    "private_key: {}",
+                    private_key.to_nonzero_scalar().to_string()
+                );
+                println!(
+                    "public_key: {}",
+                    private_key.public_key().to_encoded_point(false).to_string()
+                );
             }
             Commands::Decode { input, output, key } => {
                 let input_path_buf = input.absolutize().unwrap().to_path_buf();

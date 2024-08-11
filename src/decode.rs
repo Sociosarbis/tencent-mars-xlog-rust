@@ -1,4 +1,6 @@
 use flate2::bufread;
+use k256::elliptic_curve::sec1::Tag;
+use k256::{ecdh, PublicKey, SecretKey};
 use memmap::Mmap;
 use std::convert::TryInto;
 use std::fs::File;
@@ -7,7 +9,7 @@ use std::io;
 use std::io::prelude::*;
 use std::io::Write;
 
-mod utils {
+pub mod utils {
     use std::{fmt::Write, num::ParseIntError};
 
     pub fn decode_hex(s: &str) -> Result<Vec<u8>, ParseIntError> {
@@ -243,7 +245,7 @@ impl Context {
             }
         }
 
-        let mut crypt_key_len: usize = 0;
+        let crypt_key_len: usize;
         let magic_value = input_buf_file.bytes_at(*offset)[0];
         if magic::NO_COMPRESS_START == magic_value
             || magic::COMPRESS_START == magic_value
@@ -316,34 +318,37 @@ impl Context {
             && (magic::COMPRESS_START2 == magic_value || magic::ASYNC_ZSTD_START == magic_value)
         {
             // 解密
-
-            let mut client_pub_key: Vec<u8> = vec![0; crypt_key_len];
             let pos = *offset + header_len - crypt_key_len;
             let len = crypt_key_len;
             let data = input_buf_file.range_bytes(pos, len);
-            client_pub_key.copy_from_slice(data);
-
-            let mut svr_priate_key: Vec<u8> = vec![0];
-            if let Ok(decode) = utils::decode_hex(&self.private_key) {
-                svr_priate_key = decode;
+            let mut full_data = vec![0; len + 1];
+            full_data[1..].copy_from_slice(data);
+            full_data[0] = Tag::Uncompressed.into();
+            let client_pub_key = if let Ok(res) = PublicKey::from_sec1_bytes(&full_data) {
+                res
             } else {
                 return Err(anyhow::anyhow!("Get ECDH key error"));
-            }
+            };
 
-            let mut ecdh_buf = vec![0; 32];
-            if let None = micro_uecc_safe::ucc_shared_secret_whith_secp2561k1(
-                &mut client_pub_key,
-                &mut svr_priate_key,
-                &mut ecdh_buf,
-            ) {
+            let mut svr_priate_key = None;
+            if let Ok(decode) = utils::decode_hex(&self.private_key) {
+                if let Ok(res) = SecretKey::from_slice(&decode) {
+                    svr_priate_key = Some(res);
+                }
+            }
+            if svr_priate_key.is_none() {
                 return Err(anyhow::anyhow!("Get ECDH key error"));
             }
+            let ecdh_buf = ecdh::diffie_hellman(
+                svr_priate_key.unwrap().to_nonzero_scalar(),
+                client_pub_key.as_affine(),
+            );
 
             let mut tea_key = vec![0; 4];
             for i in 0..4 {
                 let start = i * 4;
                 let end = start + 4;
-                let bytes = &ecdh_buf[start..end];
+                let bytes = &ecdh_buf.raw_secret_bytes()[start..end];
                 let t1 = read_integer::<u32>(bytes);
                 tea_key[i] = t1;
             }
@@ -474,7 +479,7 @@ impl Context {
         let mut input_buf_file = InputBuffer::new(&self.input)?;
         let in_buf_bytes = input_buf_file.bytes();
 
-        let mut start_pos: usize = 0;
+        let mut start_pos: usize;
         match get_log_start_pos(in_buf_bytes, 2) {
             Some(it) => start_pos = it,
             None => return Err(anyhow::anyhow!("无效 Xlog 文件")),
@@ -504,7 +509,7 @@ fn is_good_log_buf(buf: &[u8], offset: usize, count: i8) -> bool {
     if offset == buf.len() {
         return true;
     }
-    let mut crypt_key_len: usize = 0;
+    let crypt_key_len: usize;
     let magic_value = buf[offset];
     if magic::NO_COMPRESS_START == magic_value
         || magic::COMPRESS_START == magic_value
