@@ -7,6 +7,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+napi = { version = "2.16.8", features = ["anyhow", "tokio_rt"] }
+napi-derive = "2.16.8"
 k256 = { version = "0.13.3", features = ["ecdh"] }
 clap = { version = "3.0.5", features = ["derive"] }
 memmap = "0.7.0"
@@ -16,7 +18,10 @@ flate2 = { version = "1.0.17", features = ["zlib"], default-features = false }
 zstd = "0.9"
 walkdir = "2"
 path-absolutize = "3.0.11"
+tokio = { version = "1.38.0", features = ["rt"] }
 
-[[bin]]
-name = "tencent-mars-xlog-util"
-path = "src/main.rs"
+[build-dependencies]
+napi-build = "2.0.1"
+
+[lib]
+crate-type = ["cdylib"]

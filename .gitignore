@@ -128,3 +128,8 @@ test_build_out/
 
 # vscode
 .vscode/
+
+index.js
+index.d.ts
+*.node
+node_modules

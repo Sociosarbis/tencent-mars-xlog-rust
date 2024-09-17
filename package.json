@@ -1,0 +1,10 @@
+{
+  "name": "tencent-mars-xlog",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.15.2"
+  }
+}

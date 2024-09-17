@@ -104,9 +104,14 @@ mod magic {
 const BASE_KEY: u8 = 0xcc;
 const TEA_BLOCK_LEN: u8 = 8;
 
+enum Output {
+    File(String),
+    Buffer(Option<Vec<u8>>),
+}
+
 pub struct Context {
     input: String,
-    output: String,
+    output: Output,
     private_key: String,
     last_seq: i16,
 }
@@ -164,6 +169,12 @@ impl InputBuffer {
     }
 }
 
+trait Writable {
+    fn appen_str(&mut self, str: &str) -> Result<(), io::Error>;
+    fn appen_bytes(&mut self, bytes: &[u8]) -> Result<(), io::Error>;
+    fn flush(&mut self);
+}
+
 struct OutputBufFile {
     file: File,
     write_pos: usize,
@@ -188,7 +199,9 @@ impl OutputBufFile {
 
         return Ok(buf);
     }
+}
 
+impl Writable for OutputBufFile {
     fn appen_str(&mut self, str: &str) -> Result<(), io::Error> {
         if str.len() == 0 {
             return Ok(());
@@ -215,16 +228,34 @@ impl OutputBufFile {
     }
 
     fn flush(&mut self) {
-        self.file.flush();
+        let _ = self.file.flush();
+    }
+}
+
+type RawBuffer = Vec<u8>;
+
+impl Writable for RawBuffer {
+    fn appen_str(&mut self, str: &str) -> Result<(), io::Error> {
+        self.extend(str.as_bytes());
+        Ok(())
+    }
+
+    fn appen_bytes(&mut self, bytes: &[u8]) -> Result<(), io::Error> {
+        self.extend(bytes);
+        Ok(())
+    }
+
+    fn flush(&mut self) {
+        // do nothing
     }
 }
 
 impl Context {
-    fn decode_buf(
+    fn decode_buf<Output: Writable>(
         &mut self,
         input_buf_file: &mut InputBuffer,
         offset: &mut usize,
-        output_buf_file: &mut OutputBufFile,
+        output_buf_file: &mut Output,
     ) -> anyhow::Result<usize> {
         let in_buf_len = input_buf_file.len();
         if *offset >= in_buf_len {
@@ -416,9 +447,9 @@ impl Context {
         return Ok(*offset + header_len + length + 1);
     }
 
-    fn zlib_decompress(
+    fn zlib_decompress<Output: Writable>(
         &self,
-        output_buf_file: &mut OutputBufFile,
+        output_buf_file: &mut Output,
         content_buf: &[u8],
     ) -> anyhow::Result<()> {
         if content_buf.len() == 0 {
@@ -444,9 +475,9 @@ impl Context {
         Ok(())
     }
 
-    fn zstd_decompress(
+    fn zstd_decompress<Output: Writable>(
         &self,
-        output_buf_file: &mut OutputBufFile,
+        output_buf_file: &mut Output,
         content_buf: &[u8],
     ) -> anyhow::Result<()> {
         if content_buf.len() == 0 {
@@ -469,25 +500,55 @@ impl Context {
     pub fn new(input: String, output: String, private_key: String) -> Context {
         Context {
             input,
-            output,
+            output: Output::File(output),
+            private_key,
+            last_seq: 0,
+        }
+    }
+
+    pub fn new_with_empty_buf(input: String, private_key: String) -> Context {
+        Context {
+            input,
+            output: Output::Buffer(None),
             private_key,
             last_seq: 0,
         }
     }
 
     pub fn decode(&mut self) -> anyhow::Result<()> {
-        let mut input_buf_file = InputBuffer::new(&self.input)?;
-        let in_buf_bytes = input_buf_file.bytes();
+        let input_buf_file = InputBuffer::new(&self.input)?;
+        let file_len = input_buf_file.file_len;
+        let start_pos: usize;
+        {
+            let in_buf_bytes = input_buf_file.bytes();
+            match get_log_start_pos(in_buf_bytes, 2) {
+                Some(it) => start_pos = it,
+                None => return Err(anyhow::anyhow!("无效 Xlog 文件")),
+            };
+        }
 
-        let mut start_pos: usize;
-        match get_log_start_pos(in_buf_bytes, 2) {
-            Some(it) => start_pos = it,
-            None => return Err(anyhow::anyhow!("无效 Xlog 文件")),
+        match self.output {
+            Output::File(ref path) => {
+                let mut output = OutputBufFile::new(&path)?;
+                self.decode_loop(input_buf_file, start_pos, &mut output)?;
+            }
+            Output::Buffer(_) => {
+                let mut output = RawBuffer::with_capacity(file_len);
+                self.decode_loop(input_buf_file, start_pos, &mut output)?;
+                self.output = Output::Buffer(Some(output));
+            }
         };
+        Ok(())
+    }
 
-        let mut output_buf_file = OutputBufFile::new(&self.output)?;
+    fn decode_loop<Output: Writable>(
+        &mut self,
+        mut input_buf_file: InputBuffer,
+        mut start_pos: usize,
+        output_buf_file: &mut Output,
+    ) -> anyhow::Result<()> {
         loop {
-            match self.decode_buf(&mut input_buf_file, &mut start_pos, &mut output_buf_file) {
+            match self.decode_buf(&mut input_buf_file, &mut start_pos, output_buf_file) {
                 Ok(pos) => {
                     start_pos = pos;
                 }
@@ -501,6 +562,13 @@ impl Context {
                     return Err(e);
                 }
             }
+        }
+    }
+
+    pub fn take_buf(self) -> Option<Vec<u8>> {
+        match self.output {
+            Output::Buffer(res) => res,
+            _ => None,
         }
     }
 }
